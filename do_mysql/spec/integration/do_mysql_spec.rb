@@ -91,7 +91,7 @@ describe DataObjects::Mysql do
     connecting_with("mysql://#{MYSQL.user}:wrongpassword@#{MYSQL.hostname}:#{MYSQL.port}/").should raise_error(MysqlError)
 
     # Bad Database Name
-    connecting_with("mysql://#{MYSQL.user}:#{MYSQL.pass}@#{MYSQL.hostname}:#{MYSQL.port}/bad_database").should raise_error(MysqlError)
+    connecting_with("mysql://#{MYSQL.user}:#{MYSQL.pass}@#{MYSQL.hostname}:#{MYSQL.port}/bad_database").should raise_error(DataObjects::SyntaxError)
 
     #
     # Again, should socket even be speced if we don't support it across all platforms?
@@ -113,21 +113,21 @@ describe DataObjects::Mysql::Connection do
   end
 
   it "should raise an error when attempting to execute a bad query" do
-    lambda { @connection.create_command("INSERT INTO non_existant_table (tester) VALUES (1)").execute_non_query }.should raise_error(MysqlError)
+    lambda { @connection.create_command("INSERT INTO non_existant_table (tester) VALUES (1)").execute_non_query }.should raise_error(DataObjects::SyntaxError)
   end
 
   it "should raise an error when executing a bad reader" do
-    lambda { @connection.create_command("SELECT * FROM non_existant_table").execute_reader }.should raise_error(MysqlError)
+    lambda { @connection.create_command("SELECT * FROM non_existant_table").execute_reader }.should raise_error(DataObjects::SyntaxError)
   end
 
   it "should not raise a connection closed error after an incorrect query" do
-    lambda { @connection.create_command("INSERT INTO non_existant_table (tester) VALUES (1)").execute_non_query }.should raise_error(MysqlError)
-    lambda { @connection.create_command("INSERT INTO non_existant_table (tester) VALUES (1)").execute_non_query }.should_not raise_error(MysqlError, "This connection has already been closed.")
+    lambda { @connection.create_command("INSERT INTO non_existant_table (tester) VALUES (1)").execute_non_query }.should raise_error(DataObjects::SyntaxError)
+    lambda { @connection.create_command("INSERT INTO non_existant_table (tester) VALUES (1)").execute_non_query }.should_not raise_error(DataObjects::ConnectionError)
   end
 
   it "should not raise a connection closed error after an incorrect reader" do
-    lambda { @connection.create_command("SELECT * FROM non_existant_table").execute_reader }.should raise_error(MysqlError)
-    lambda { @connection.create_command("SELECT * FROM non_existant_table").execute_reader }.should_not raise_error(MysqlError, "This connection has already been closed.")
+    lambda { @connection.create_command("SELECT * FROM non_existant_table").execute_reader }.should raise_error(DataObjects::SyntaxError)
+    lambda { @connection.create_command("SELECT * FROM non_existant_table").execute_reader }.should_not raise_error(DataObjects::ConnectionError)
   end
 
 end

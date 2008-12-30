@@ -92,9 +92,9 @@ describe "DataObjects::Postgres::Result" do
 
   it "should raise errors on bad queries" do
     command = @connection.create_command("INSER INTO users (name) VALUES ('Test')")
-    lambda { command.execute_non_query }.should raise_error
+    lambda { command.execute_non_query }.should raise_error(DataObjects::SyntaxError)
     command = @connection.create_command("INSERT INTO users (non_existant_field) VALUES ('Test')")
-    lambda { command.execute_non_query }.should raise_error
+    lambda { command.execute_non_query }.should raise_error(DataObjects::SyntaxError)
   end
 
   it "should not have an insert_id without RETURNING" do

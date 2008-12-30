@@ -7,13 +7,14 @@
 #include <mysql.h>
 #include <errmsg.h>
 #include <mysqld_error.h>
+#include "error.h"
 
 #define RUBY_CLASS(name) rb_const_get(rb_cObject, rb_intern(name))
 #define RUBY_STRING(char_ptr) rb_str_new2(char_ptr)
 #define TAINTED_STRING(name, length) rb_tainted_str_new(name, length)
 #define DRIVER_CLASS(klass, parent) (rb_define_class_under(mDOMysql, klass, parent))
 #define CONST_GET(scope, constant) (rb_funcall(scope, ID_CONST_GET, 1, rb_str_new2(constant)))
-#define CHECK_AND_RAISE(mysql_result_value, str) if (0 != mysql_result_value) { raise_mysql_error(connection, db, mysql_result_value, str); }
+#define CHECK_AND_RAISE(mysql_result_value, query) if (0 != mysql_result_value) { raise_error(self, db, query); }
 #define PUTS(string) rb_funcall(rb_mKernel, rb_intern("puts"), 1, RUBY_STRING(string))
 
 #ifndef RSTRING_PTR
@@ -336,17 +337,29 @@ static void data_objects_debug(VALUE string) {
   }
 }
 
-static void raise_mysql_error(VALUE connection, MYSQL *db, int mysql_error_code, char* str) {
+static void raise_error(VALUE self, MYSQL *db, VALUE query) {
+  VALUE exception;
+  const char *exception_type = "SQLError";
   char *mysql_error_message = (char *)mysql_error(db);
+  int mysql_error_code = mysql_errno(db);
 
-  if(mysql_error_code == 1) {
-    mysql_error_code = mysql_errno(db);
+  struct errcodes *errs;
+
+  for (errs = errors; errs->error_name; errs++) {
+    if(errs->error_no == mysql_error_code) {
+      exception_type = errs->exception;
+      break;
+    }
   }
-  if(str) {
-    rb_raise(eMysqlError, "(mysql_errno=%04d, sql_state=%s) %s\nQuery: %s", mysql_error_code, mysql_sqlstate(db), mysql_error_message, str);
-  } else {
-    rb_raise(eMysqlError, "(mysql_errno=%04d, sql_state=%s) %s", mysql_error_code, mysql_sqlstate(db), mysql_error_message);
-  }
+  printf("exception_type: %s\n", exception_type);
+  exception = rb_funcall(CONST_GET(mDO, exception_type), ID_NEW, 5,
+                         rb_str_new2(mysql_error_message),
+                         INT2NUM(mysql_error_code),
+                         rb_str_new2(mysql_sqlstate(db)),
+                         query,
+                         rb_funcall(rb_iv_get(self, "@connection"), rb_intern("to_s"), 0));
+  rb_exc_raise(exception);
+
 }
 
 static char * get_uri_option(VALUE query_hash, char * key) {
@@ -371,17 +384,15 @@ static MYSQL_RES* cCommand_execute_async(VALUE self, MYSQL* db, VALUE query) {
   char* str = RSTRING_PTR(query);
   int len   = RSTRING_LEN(query);
 
-  VALUE connection = rb_iv_get(self, "@connection");
-
   retval = mysql_ping(db);
   if(retval == CR_SERVER_GONE_ERROR) {
-    CHECK_AND_RAISE(retval, "Mysql server has gone away. \
+    CHECK_AND_RAISE(retval, rb_str_new2("Mysql server has gone away. \
                              Please report this issue to the Datamapper project. \
-                             Specify your at least your MySQL version when filing a ticket");
+                             Specify your at least your MySQL version when filing a ticket"));
   }
   retval = mysql_send_query(db, str, len);
   data_objects_debug(query);
-  CHECK_AND_RAISE(retval, str);
+  CHECK_AND_RAISE(retval, query);
 
   socket_fd = db->net.fd;
 
@@ -405,7 +416,7 @@ static MYSQL_RES* cCommand_execute_async(VALUE self, MYSQL* db, VALUE query) {
   }
 
   retval = mysql_read_query_result(db);
-  CHECK_AND_RAISE(retval, str);
+  CHECK_AND_RAISE(retval, query);
 
   return mysql_store_result(db);
 }
@@ -490,13 +501,13 @@ static VALUE cConnection_initialize(VALUE self, VALUE uri) {
   );
 
   if (NULL == result) {
-    raise_mysql_error(Qnil, db, -1, NULL);
+    raise_error(self, db, Qnil);
   }
 
   // Set the connections character set
   encoding_error = mysql_set_character_set(db, encoding);
   if (0 != encoding_error) {
-    raise_mysql_error(Qnil, db, encoding_error, NULL);
+    raise_error(self, db, Qnil);
   }
 
   // Disable sql_auto_is_null
@@ -854,4 +865,11 @@ void Init_do_mysql_ext() {
   rb_define_method(cReader, "next!", cReader_next, 0);
   rb_define_method(cReader, "values", cReader_values, 0);
   rb_define_method(cReader, "fields", cReader_fields, 0);
+
+  struct errcodes *errs;
+
+  for (errs = errors; errs->error_name; errs++) {
+    rb_const_set(mDOMysql, rb_intern(errs->error_name), INT2NUM(errs->error_no));
+  }
+
 }

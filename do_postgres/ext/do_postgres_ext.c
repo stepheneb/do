@@ -2,6 +2,7 @@
 #include <postgres.h>
 #include <mb/pg_wchar.h>
 #include <catalog/pg_type.h>
+#include <utils/errcodes.h>
 
 /* Undefine constants Postgres also defines */
 #undef PACKAGE_BUGREPORT
@@ -13,6 +14,7 @@
 #include <version.h>
 #include <string.h>
 #include <math.h>
+#include "error.h"
 
 #define ID_CONST_GET rb_intern("const_get")
 #define ID_PATH rb_intern("path")
@@ -321,6 +323,32 @@ static VALUE typecast(char *value, long length, char *type) {
 
 }
 
+static void raise_error(VALUE self, PGresult *result, VALUE query) {
+  VALUE exception;
+  char *message = PQresultErrorMessage(result);
+  char *sqlstate = PQresultErrorField(result, PG_DIAG_SQLSTATE);
+  int postgres_errno = MAKE_SQLSTATE(sqlstate[0], sqlstate[1], sqlstate[2], sqlstate[3], sqlstate[4]);
+  const char *exception_type = "SQLError";
+  PQclear(result);
+
+  struct errcodes *errs;
+
+  for (errs = errors; errs->error_name; errs++) {
+    if(errs->error_no == postgres_errno) {
+      exception_type = errs->exception;
+      break;
+    }
+  }
+  exception = rb_funcall(CONST_GET(mDO, exception_type), ID_NEW, 5,
+                         rb_str_new2(message),
+                         INT2NUM(postgres_errno),
+                         rb_str_new2(sqlstate),
+                         query,
+                         rb_funcall(rb_iv_get(self, "@connection"), rb_intern("to_s"), 0));
+  rb_exc_raise(exception);
+}
+
+
 /* ====== Public API ======= */
 static VALUE cConnection_dispose(VALUE self) {
   PGconn *db = DATA_PTR(rb_iv_get(self, "@connection"));
@@ -495,7 +523,7 @@ static VALUE cConnection_initialize(VALUE self, VALUE uri) {
 
     if (PQresultStatus(result) != PGRES_COMMAND_OK) {
       free(search_path_query);
-      rb_raise(ePostgresError, PQresultErrorMessage(result));
+      raise_error(self, result, r_query);
     }
 
     free(search_path_query);
@@ -505,14 +533,14 @@ static VALUE cConnection_initialize(VALUE self, VALUE uri) {
   result = cCommand_execute_async(db, r_options);
 
   if (PQresultStatus(result) != PGRES_COMMAND_OK) {
-    rb_raise(ePostgresError, PQresultErrorMessage(result));
+    raise_error(self, result, r_options);
   }
 
   r_options = rb_str_new(standard_strings_on, strlen(standard_strings_on) + 1);
   result = cCommand_execute_async(db, r_options);
 
   if (PQresultStatus(result) != PGRES_COMMAND_OK) {
-    rb_raise(ePostgresError, PQresultErrorMessage(result));
+    raise_error(self, result, r_options);
   }
 
   encoding = get_uri_option(r_query, "encoding");
@@ -552,8 +580,8 @@ static VALUE cCommand_execute_non_query(int argc, VALUE *argv[], VALUE self) {
   PGresult *response;
   int status;
 
-  int affected_rows;
-  int insert_id;
+  int affected_rows = 0;
+  int insert_id = 0;
 
   VALUE query = build_query_from_args(self, argc, argv);
 
@@ -566,14 +594,10 @@ static VALUE cCommand_execute_non_query(int argc, VALUE *argv[], VALUE self) {
     affected_rows = 1;
   }
   else if ( status == PGRES_COMMAND_OK ) {
-    insert_id = 0;
     affected_rows = atoi(PQcmdTuples(response));
   }
   else {
-    char *message = PQresultErrorMessage(response);
-    char *sqlstate = PQresultErrorField(response, PG_DIAG_SQLSTATE);
-    PQclear(response);
-    rb_raise(ePostgresError, "(sql_state=%s) %sQuery: %s\n", sqlstate, message, StringValuePtr(query));
+    raise_error(self, response, query);
   }
 
   PQclear(response);
@@ -597,9 +621,7 @@ static VALUE cCommand_execute_reader(int argc, VALUE *argv[], VALUE self) {
   response = cCommand_execute_async(db, query);
 
   if ( PQresultStatus(response) != PGRES_TUPLES_OK ) {
-    char *message = PQresultErrorMessage(response);
-    PQclear(response);
-    rb_raise(ePostgresError, "%sQuery: %s\n", message, StringValuePtr(query));
+    raise_error(self, response, query);
   }
 
   field_count = PQnfields(response);
@@ -764,5 +786,11 @@ void Init_do_postgres_ext() {
   rb_define_method(cReader, "next!", cReader_next, 0);
   rb_define_method(cReader, "values", cReader_values, 0);
   rb_define_method(cReader, "fields", cReader_fields, 0);
+
+  struct errcodes *errs;
+
+  for (errs = errors; errs->error_name; errs++) {
+    rb_const_set(mPostgres, rb_intern(errs->error_name), INT2NUM(errs->error_no));
+  }
 
 }
